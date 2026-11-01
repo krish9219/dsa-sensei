@@ -120,6 +120,20 @@ def test_schedule_status_edges_and_entrypoint(tmp_path: Path, monkeypatch: pytes
         main()
 
 
+def test_show_hides_patterns_until_the_approach(tmp_path: Path) -> None:
+    shown = runner.invoke(app, ["show", "kadane"])
+    assert shown.exit_code == 0
+    assert "best sum ending here" not in shown.stdout
+    hinted = runner.invoke(app, ["--db", str(tmp_path / "h.db"), "hint", "kadane", "--level", "2"])
+    assert hinted.exit_code == 0
+    assert "best sum ending here" in hinted.stdout
+    source = tmp_path / "latin1.py"
+    source.write_bytes(b"def f():\n    return '\xff'\n")
+    rejected = runner.invoke(app, ["analyze", str(source)])
+    assert rejected.exit_code == 2
+    assert "UTF-8" in rejected.stdout
+
+
 def test_practice_config_reset_and_topics(tmp_path: Path) -> None:
     db = tmp_path / "cli.db"
     started = runner.invoke(app, ["--db", str(db), "practice", "--difficulty", "easy"])

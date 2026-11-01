@@ -157,6 +157,62 @@ def test_service_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert card.to_dict()["last_reviewed_on"] == "2026-04-01"
 
 
+def test_attempt_restarts_the_hint_ladder(tmp_path: Path) -> None:
+    db = tmp_path / "hints.db"
+    assert get_hint("stair-ways", 3, db=db).level == 3
+    record_attempt("stair-ways", 4, db=db, on=date(2026, 4, 1))
+    assert get_hint("stair-ways", db=db).level == 1
+
+
+def test_unknown_attempt_does_not_suggest_a_custom_prompt(tmp_path: Path) -> None:
+    with pytest.raises(SenseiError, match="dsa-sensei list") as caught:
+        record_attempt("zzzz-not-a-problem", 4, db=tmp_path / "s.db")
+    assert "custom prompt" not in str(caught.value)
+    with pytest.raises(SenseiError, match="custom prompt"):
+        get_hint("zzzz-not-a-problem", db=tmp_path / "s.db")
+
+
+def test_progress_ignores_unknown_problem_ids(tmp_path: Path) -> None:
+    db = tmp_path / "orphan.db"
+    Store(db).record_attempt("retired-problem", 5, hints_used=0, notes="", on=date(2026, 4, 1))
+    report = progress_report(db=db, on=date(2026, 4, 1))
+    assert report.attempts == 0
+    assert report.seen == 0
+    assert report.streak_days == 0
+
+
+def test_schema_version_is_recorded(tmp_path: Path) -> None:
+    import sqlite3
+
+    db = tmp_path / "versioned.db"
+    record_attempt("stair-ways", 5, db=db, on=date(2026, 4, 1))
+    connection = sqlite3.connect(db)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert connection.execute("SELECT value FROM schema_meta WHERE key = 'version'").fetchone()[0] == "1"
+    connection.close()
+
+
+def test_parallel_reviews_do_not_lose_an_update(tmp_path: Path) -> None:
+    import threading
+
+    db = tmp_path / "race.db"
+    record_attempt("stair-ways", 5, db=db, on=date(2026, 4, 1))
+    barrier = threading.Barrier(2)
+
+    def worker() -> None:
+        barrier.wait()
+        record_attempt("stair-ways", 5, db=db, on=date(2026, 4, 2))
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    card = Store(db).get_card("stair-ways")
+    assert card is not None
+    assert card.repetitions == 3
+
+
 def test_bad_review_date(tmp_path: Path) -> None:
     with pytest.raises(SenseiError, match="YYYY-MM-DD"):
         due_reviews(on="April 1", db=tmp_path / "s.db")

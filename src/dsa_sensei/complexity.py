@@ -81,6 +81,7 @@ class Findings:
     mutates_input: bool = False
     marks_visited: bool = False
     calls_local: bool = False
+    small_iters: set[str] = field(default_factory=set)
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -136,49 +137,57 @@ def analyze_python(code: str) -> ComplexityReport:
     if not source.strip():
         raise CodeRejected("Submit some Python code to analyze.")
     try:
-        tree = ast.parse(source)
-    except SyntaxError as exc:
-        line = exc.lineno or 1
-        raise CodeRejected(f"Could not parse this as Python (line {line}): {exc.msg}") from exc
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            line = exc.lineno or 1
+            raise CodeRejected(f"Could not parse this as Python (line {line}): {exc.msg}") from exc
+        functions = _collect_functions(tree)
+        reports: list[tuple[FunctionComplexity, Cost, Cost, str]] = []
+        defined = {node.name for _, node in functions}
+        module_stmts = _module_statements(tree)
+        if module_stmts:
+            report, time, space, confidence = _analyze_block("<module>", module_stmts, defined, memo=False)
+            reports.append((report, time, space, confidence))
+        for name, node in functions:
+            memo = _memo_decorator(node)
+            report, time, space, confidence = _analyze_block(
+                name, list(node.body), defined, memo=memo, fname=node.name
+            )
+            reports.append((report, time, space, confidence))
+        if not reports:
+            raise CodeRejected("No executable code found. Submit a function or a snippet.")
 
-    functions = _collect_functions(tree)
-    reports: list[tuple[FunctionComplexity, Cost, Cost, str]] = []
-    defined = {node.name for _, node in functions}
-    module_stmts = _module_statements(tree)
-    if module_stmts:
-        report, time, space, confidence = _analyze_block("<module>", module_stmts, defined, memo=False)
-        reports.append((report, time, space, confidence))
-    for name, node in functions:
-        memo = _memo_decorator(node)
-        report, time, space, confidence = _analyze_block(
-            name, list(node.body), defined, memo=memo, fname=node.name
+        primary = max(reports, key=lambda item: (item[1].key(), item[2].key()))
+        warnings = _unique(warning for report, _, _, _ in reports for warning in report.warnings)
+        notes = _unique(note for report, _, _, _ in reports for note in report.notes)
+        if len(reports) > 1:
+            notes.append(
+                "Calls between functions in this snippet are not inlined. "
+                f"The headline is the most expensive one ({primary[0].name})."
+            )
+        confidences = [item[3] for item in reports]
+        confidence = "low" if "low" in confidences else "medium" if "medium" in confidences else "high"
+        if len(reports) > 1 and confidence == "high":
+            confidence = "medium"
+        return ComplexityReport(
+            time=format_cost(primary[1]),
+            space=format_cost(primary[2]),
+            confidence=confidence,
+            disclaimer=DISCLAIMER,
+            warnings=tuple(warnings),
+            notes=tuple(notes),
+            functions=tuple(item[0] for item in reports),
+            primary_function=primary[0].name,
         )
-        reports.append((report, time, space, confidence))
-    if not reports:
-        raise CodeRejected("No executable code found. Submit a function or a snippet.")
-
-    primary = max(reports, key=lambda item: (item[1].key(), item[2].key()))
-    warnings = _unique(warning for report, _, _, _ in reports for warning in report.warnings)
-    notes = _unique(note for report, _, _, _ in reports for note in report.notes)
-    if len(reports) > 1:
-        notes.append(
-            "Calls between functions in this snippet are not inlined. "
-            f"The headline is the most expensive one ({primary[0].name})."
-        )
-    confidences = [item[3] for item in reports]
-    confidence = "low" if "low" in confidences else "medium" if "medium" in confidences else "high"
-    if len(reports) > 1 and confidence == "high":
-        confidence = "medium"
-    return ComplexityReport(
-        time=format_cost(primary[1]),
-        space=format_cost(primary[2]),
-        confidence=confidence,
-        disclaimer=DISCLAIMER,
-        warnings=tuple(warnings),
-        notes=tuple(notes),
-        functions=tuple(item[0] for item in reports),
-        primary_function=primary[0].name,
-    )
+    except CodeRejected:
+        raise
+    except RecursionError as exc:
+        raise CodeRejected("This code is nested too deeply to analyze.") from exc
+    except MemoryError as exc:
+        raise CodeRejected("This code is too large to analyze.") from exc
+    except ValueError as exc:
+        raise CodeRejected(f"Could not analyze this code: {exc}") from exc
 
 
 def format_cost(cost: Cost) -> str:
@@ -261,7 +270,7 @@ def _analyze_block(
 ) -> tuple[FunctionComplexity, Cost, Cost, str]:
     findings = Findings()
     findings.calls_local = False
-    body_cost = _block_cost(body, 0, findings, defined)
+    body_cost = _block_cost(body, LoopContext(), findings, defined)
     calls, kinds, in_loop = _recursion_shape(body, fname) if fname else (0, set(), False)
     halving = _halves(body)
     manual_memo = bool(
@@ -355,46 +364,78 @@ def _combine(
     return body.loop_linear(), "linear", "medium"
 
 
-def _block_cost(stmts: list[ast.stmt], depth: int, findings: Findings, defined: set[str]) -> Cost:
+@dataclass(frozen=True, slots=True)
+class LoopContext:
+    """Where a statement sits relative to the loops that enclose it."""
+
+    depth: int = 0
+    targets: tuple[str, ...] = ()
+    reset_names: frozenset[str] = frozenset()
+    inside_pop_while: bool = False
+    inside_while: bool = False
+
+
+def _block_cost(stmts: list[ast.stmt], ctx: LoopContext, findings: Findings, defined: set[str]) -> Cost:
     cost = ZERO
     for stmt in stmts:
-        cost = cost.max(_stmt_cost(stmt, depth, findings, defined))
+        cost = cost.max(_stmt_cost(stmt, ctx, findings, defined))
     return cost
 
 
-def _stmt_cost(stmt: ast.stmt, depth: int, findings: Findings, defined: set[str]) -> Cost:
+def _stmt_cost(stmt: ast.stmt, ctx: LoopContext, findings: Findings, defined: set[str]) -> Cost:
+    depth = ctx.depth
     if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return ZERO
     if isinstance(stmt, (ast.For, ast.AsyncFor)):
         iter_cost = _expr_cost(stmt.iter, depth, findings, defined)
-        inner = _block_cost(list(stmt.body), depth + 1, findings, defined)
-        other = _block_cost(list(stmt.orelse), depth, findings, defined)
-        return iter_cost.max(inner.loop_linear()).max(other)
+        child = LoopContext(
+            depth=depth + 1,
+            targets=ctx.targets + _target_names(stmt.target),
+            reset_names=frozenset(_assigned_outside_whiles(list(stmt.body))),
+            inside_pop_while=ctx.inside_pop_while,
+            inside_while=ctx.inside_while,
+        )
+        inner = _block_cost(list(stmt.body), child, findings, defined)
+        other = _block_cost(list(stmt.orelse), ctx, findings, defined)
+        if _for_adds_factor(stmt, ctx, findings):
+            return iter_cost.max(inner.loop_linear()).max(other)
+        return iter_cost.max(inner).max(other)
     if isinstance(stmt, ast.While):
         test_cost = _expr_cost(stmt.test, depth, findings, defined)
-        inner = _block_cost(list(stmt.body), depth + 1, findings, defined)
-        other = _block_cost(list(stmt.orelse), depth, findings, defined)
+        child = LoopContext(
+            depth=depth + 1,
+            targets=ctx.targets,
+            reset_names=ctx.reset_names,
+            inside_pop_while=ctx.inside_pop_while or _contains_pop(stmt),
+            inside_while=True,
+        )
+        inner = _block_cost(list(stmt.body), child, findings, defined)
+        other = _block_cost(list(stmt.orelse), ctx, findings, defined)
         if _while_is_log(stmt):
             return test_cost.max(inner.loop_log()).max(other)
+        if ctx.depth > 0 and _while_is_amortized(stmt, ctx):
+            return test_cost.max(inner).max(other)
         findings.assumed_linear_while = True
         return test_cost.max(inner.loop_linear()).max(other)
     if isinstance(stmt, ast.If):
         _note_membership(stmt.test, findings)
         cost = _expr_cost(stmt.test, depth, findings, defined)
-        cost = cost.max(_block_cost(list(stmt.body), depth, findings, defined))
-        return cost.max(_block_cost(list(stmt.orelse), depth, findings, defined))
-    if isinstance(stmt, ast.Try):
-        cost = _block_cost(list(stmt.body), depth, findings, defined)
-        for handler in stmt.handlers:
-            cost = cost.max(_block_cost(list(handler.body), depth, findings, defined))
-        cost = cost.max(_block_cost(list(stmt.orelse), depth, findings, defined))
-        return cost.max(_block_cost(list(stmt.finalbody), depth, findings, defined))
+        cost = cost.max(_block_cost(list(stmt.body), ctx, findings, defined))
+        return cost.max(_block_cost(list(stmt.orelse), ctx, findings, defined))
+    try_parts = _try_parts(stmt)
+    if try_parts is not None:
+        body, handlers, orelse, finalbody = try_parts
+        cost = _block_cost(list(body), ctx, findings, defined)
+        for handler in handlers:
+            cost = cost.max(_block_cost(list(handler.body), ctx, findings, defined))
+        cost = cost.max(_block_cost(list(orelse), ctx, findings, defined))
+        return cost.max(_block_cost(list(finalbody), ctx, findings, defined))
     if isinstance(stmt, (ast.With, ast.AsyncWith)):
-        return _block_cost(list(stmt.body), depth, findings, defined)
+        return _block_cost(list(stmt.body), ctx, findings, defined)
     if isinstance(stmt, ast.Match):
         cost = ZERO
         for case in stmt.cases:
-            cost = cost.max(_block_cost(list(case.body), depth, findings, defined))
+            cost = cost.max(_block_cost(list(case.body), ctx, findings, defined))
         return cost
     if isinstance(stmt, ast.Assign):
         return _assign_cost(stmt, depth, findings, defined)
@@ -414,6 +455,177 @@ def _stmt_cost(stmt: ast.stmt, depth: int, findings: Findings, defined: set[str]
     if isinstance(stmt, ast.Delete):
         return ZERO
     return ZERO
+
+
+def _target_names(target: ast.expr) -> tuple[str, ...]:
+    if isinstance(target, ast.Name):
+        return (target.id,)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for elt in target.elts:
+            names.extend(_target_names(elt))
+        return tuple(names)
+    return ()
+
+
+def _direct_assign_names(stmt: ast.stmt) -> set[str]:
+    if isinstance(stmt, ast.Assign):
+        names: set[str] = set()
+        for target in stmt.targets:
+            names.update(_target_names(target))
+        return names
+    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+        return {stmt.target.id}
+    if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+        return {stmt.target.id}
+    return set()
+
+
+def _assigned_skip_while(stmt: ast.stmt) -> set[str]:
+    if isinstance(stmt, (ast.While, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return set()
+    found = _direct_assign_names(stmt)
+    for child in ast.iter_child_nodes(stmt):
+        if isinstance(child, ast.stmt):
+            found |= _assigned_skip_while(child)
+    return found
+
+
+def _assigned_outside_whiles(stmts: list[ast.stmt]) -> set[str]:
+    found: set[str] = set()
+    for stmt in stmts:
+        found |= _assigned_skip_while(stmt)
+    return found
+
+
+def _is_constant_iter(node: ast.expr) -> bool:
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)) and len(node.elts) <= 12:
+        return True
+    if isinstance(node, ast.Call) and _call_name(node.func) == "range":
+        values: list[int] = []
+        for arg in node.args[:2]:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, int):
+                values.append(arg.value)
+        if len(node.args) == 1 and len(values) == 1:
+            return abs(values[0]) <= 16
+        if len(node.args) >= 2 and len(values) == 2:
+            return abs(values[1] - values[0]) <= 16
+    return False
+
+
+def _is_child_or_flatten(node: ast.expr, ctx: LoopContext) -> bool:
+    """True when this loop walks the current row, a neighbor list, or a fixed tuple."""
+    if isinstance(node, ast.Name) and node.id in ctx.targets:
+        return True
+    if ctx.depth > 0 and isinstance(node, (ast.Subscript, ast.Attribute)):
+        return True
+    if isinstance(node, ast.Call) and _call_name(node.func) == "range" and node.args:
+        arg = node.args[0]
+        if isinstance(arg, ast.Name) and arg.id in ctx.targets:
+            return True
+        if isinstance(arg, ast.Call) and _call_name(arg.func) == "len" and arg.args:
+            subject = arg.args[0]
+            if isinstance(subject, ast.Name) and subject.id in ctx.targets:
+                return True
+            if isinstance(subject, ast.Subscript) and ctx.depth > 0:
+                return True
+    return False
+
+
+def _for_adds_factor(stmt: ast.For | ast.AsyncFor, ctx: LoopContext, findings: Findings) -> bool:
+    if _is_constant_iter(stmt.iter):
+        return False
+    if isinstance(stmt.iter, ast.Name) and stmt.iter.id in findings.small_iters:
+        return False
+    if ctx.depth > 0 and _is_child_or_flatten(stmt.iter, ctx):
+        return False
+    scanning_a_layer = (
+        ctx.inside_pop_while and isinstance(stmt.iter, ast.Call) and _call_name(stmt.iter.func) == "range"
+    )
+    return not scanning_a_layer
+
+
+def _contains_pop(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and _call_name(child.func) in {"pop", "popleft"}:
+            return True
+    return False
+
+
+def _contains_full_scan(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, (ast.For, ast.AsyncFor)) and not _is_constant_iter(child.iter):
+            if isinstance(child.iter, (ast.Subscript, ast.Attribute)):
+                continue
+            if isinstance(child.iter, ast.Call) and _call_name(child.iter.func) == "range":
+                continue
+            return True
+    return False
+
+
+def _advanced_names(node: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name):
+            if isinstance(child.op, (ast.Add, ast.Sub)):
+                names.add(child.target.id)
+        elif isinstance(child, ast.Assign) and len(child.targets) == 1:
+            target = child.targets[0]
+            if (
+                isinstance(target, ast.Name)
+                and isinstance(child.value, ast.BinOp)
+                and isinstance(child.value.left, ast.Name)
+                and child.value.left.id == target.id
+                and isinstance(child.value.op, (ast.Add, ast.Sub))
+            ):
+                names.add(target.id)
+    return names
+
+
+def _names_used_as_subscript(node: ast.AST, names: set[str]) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Subscript) and isinstance(child.slice, ast.Name) and child.slice.id in names:
+            return True
+    return False
+
+
+def _has_membership_test(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Compare) and any(isinstance(op, (ast.In, ast.NotIn)) for op in child.ops):
+            return True
+    return False
+
+
+def _while_is_amortized(stmt: ast.While, ctx: LoopContext) -> bool:
+    """An inner while that only drains a stack or walks a pointer forward once."""
+    if _contains_full_scan(stmt):
+        return False
+    if ctx.inside_while:
+        return True
+    advanced = _advanced_names(stmt)
+    pops = _contains_pop(stmt)
+    reset = advanced & set(ctx.reset_names)
+    indexed = reset if _names_used_as_subscript(stmt, reset) else set()
+    if indexed:
+        return False
+    if pops or (advanced - reset):
+        return True
+    return bool(reset and _has_membership_test(stmt))
+
+
+def _try_parts(
+    stmt: ast.stmt,
+) -> tuple[list[ast.stmt], list[ast.ExceptHandler], list[ast.stmt], list[ast.stmt]] | None:
+    if isinstance(stmt, ast.Try):
+        return list(stmt.body), list(stmt.handlers), list(stmt.orelse), list(stmt.finalbody)
+    try_star = getattr(ast, "TryStar", None)
+    if try_star is not None and isinstance(stmt, try_star):
+        body = list(getattr(stmt, "body", []))
+        handlers = list(getattr(stmt, "handlers", []))
+        orelse = list(getattr(stmt, "orelse", []))
+        finalbody = list(getattr(stmt, "finalbody", []))
+        return body, handlers, orelse, finalbody
+    return None
 
 
 def _assign_cost(stmt: ast.Assign, depth: int, findings: Findings, defined: set[str]) -> Cost:
@@ -465,11 +677,15 @@ def _expr_cost(expr: ast.expr | None, depth: int, findings: Findings, defined: s
             _comp_cost(list(expr.generators), expr.value, depth, findings, defined)
         )
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mult) and _is_sequence(expr.left, expr.right):
-        findings.alloc = True
-        return (
-            Cost(1, 0, 0)
-            .max(_expr_cost(expr.left, depth, findings, defined))
-            .max(_expr_cost(expr.right, depth, findings, defined))
+        if not _is_small_repeat(expr):
+            findings.alloc = True
+            return (
+                Cost(1, 0, 0)
+                .max(_expr_cost(expr.left, depth, findings, defined))
+                .max(_expr_cost(expr.right, depth, findings, defined))
+            )
+        return _expr_cost(expr.left, depth, findings, defined).max(
+            _expr_cost(expr.right, depth, findings, defined)
         )
     if isinstance(expr, ast.Subscript) and isinstance(expr.slice, ast.Slice):
         findings.slice_copies += 1
@@ -525,8 +741,9 @@ def _call_cost(call: ast.Call, depth: int, findings: Findings, defined: set[str]
     elif name in _LINEAR_AGGREGATES or (name in {"min", "max"} and len(args) <= 1):
         cost = cost.max(Cost(1, 0, 0))
     elif (name in _CONTAINER_CTORS and args) or name == "join":
-        findings.alloc = True
-        cost = cost.max(Cost(1, 0, 0))
+        if not _args_are_small(call, findings):
+            findings.alloc = True
+            cost = cost.max(Cost(1, 0, 0))
     elif name == "insert" and depth > 0:
         findings.insert_in_loop = True
     elif name == "pop" and depth > 0 and args and _is_zero(args[0]):
@@ -653,7 +870,9 @@ def _is_self_call(call: ast.Call, fname: str) -> bool:
     func = call.func
     if isinstance(func, ast.Name):
         return func.id == fname
-    return isinstance(func, ast.Attribute) and func.attr == fname
+    if isinstance(func, ast.Attribute) and func.attr == fname and isinstance(func.value, ast.Name):
+        return func.value.id in {"self", "cls"}
+    return False
 
 
 def _arg_kinds(call: ast.Call) -> set[str]:
@@ -742,8 +961,10 @@ def _track_target(target: ast.expr, value: ast.expr, findings: Findings) -> None
     if isinstance(target, ast.Name):
         if _is_fresh_container(value):
             findings.owned.add(target.id)
-            if isinstance(value, ast.BinOp):
+            if isinstance(value, ast.BinOp) and not _is_small_repeat(value):
                 findings.alloc = True
+        if _is_small_container(value):
+            findings.small_iters.add(target.id)
         if isinstance(value, ast.Constant) and isinstance(value.value, str):
             findings.string_names.add(target.id)
         return
@@ -762,6 +983,28 @@ def _is_fresh_container(expr: ast.expr) -> bool:
     return (
         isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mult) and _is_sequence(expr.left, expr.right)
     )
+
+
+def _is_small_container(expr: ast.expr) -> bool:
+    if isinstance(expr, (ast.List, ast.Tuple, ast.Set)) and len(expr.elts) <= 12:
+        return True
+    return isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mult) and _is_small_repeat(expr)
+
+
+def _args_are_small(call: ast.Call, findings: Findings) -> bool:
+    if len(call.args) != 1:
+        return False
+    arg = call.args[0]
+    if isinstance(arg, ast.Name) and arg.id in findings.small_iters:
+        return True
+    return _is_small_container(arg)
+
+
+def _is_small_repeat(expr: ast.BinOp) -> bool:
+    constant = expr.right if isinstance(expr.right, ast.Constant) else expr.left
+    if not isinstance(constant, ast.Constant) or not isinstance(constant.value, int):
+        return False
+    return abs(constant.value) <= 64
 
 
 def _is_sequence(left: ast.expr, right: ast.expr) -> bool:

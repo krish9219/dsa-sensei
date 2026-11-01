@@ -38,7 +38,7 @@ class Problem:
     complexity_note: str = ""
 
     def public_dict(self) -> dict[str, object]:
-        """Statement and metadata. Hints and target bounds stay off this payload."""
+        """Statement and metadata. Hints, patterns, aliases, and targets stay off this payload."""
         return {
             "id": self.id,
             "title": self.title,
@@ -51,8 +51,6 @@ class Problem:
                 for item in self.examples
             ],
             "constraints": list(self.constraints),
-            "patterns": list(self.patterns),
-            "aliases": list(self.aliases),
         }
 
 
@@ -66,9 +64,10 @@ class HintResult:
     levels_remaining: int
     source: str
     exhausted: bool = False
+    patterns: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "problem_id": self.problem_id,
             "title": self.title,
             "level": self.level,
@@ -78,6 +77,9 @@ class HintResult:
             "source": self.source,
             "exhausted": self.exhausted,
         }
+        if self.patterns:
+            payload["patterns"] = list(self.patterns)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

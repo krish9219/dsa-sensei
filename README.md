@@ -58,7 +58,7 @@ stair-ways   Ways to Climb the Stairs   dynamic-programming   2026-04-02
 
 - **Hint ladder.** Each problem has three hand-written rungs: a nudge, the pattern, then pseudocode. The default command reveals the next rung you have not seen and remembers that in the local study log.
 - **Complexity feedback.** An AST walk estimates time and space from loop nesting, recursion shape, sorting, and common container operations. It flags `list.pop(0)`, repeated string `+=`, and branching recursion without a cache. The report says these are heuristics.
-- **Spaced repetition.** Attempts are stored in SQLite. Grades use SM-2: ease starts at 2.5, successful reviews move through 1 day, 6 days, then `interval × ease`, and a grade below 3 restarts the ladder without resetting ease below 1.3. `review` lists what is due. `progress` breaks that down by topic.
+- **Spaced repetition.** Attempts are stored in SQLite. Grades use SM-2. Ease starts at 2.5 and is updated after every grade, but it never drops below 1.3. Successful reviews are scheduled after 1 day, then 6 days, then `interval × ease`. A grade below 3 schedules the next review for tomorrow and restarts that interval ladder; it does not restore ease to 2.5. Logging an attempt also clears hint progress, so the next session starts again at the nudge. `review` lists what is due. `progress` breaks that down by topic.
 - **CLI.** Typer and Rich. `dsa-sensei list`, `show`, `hint`, `analyze`, `attempt`, `review`, `progress`, `practice`.
 - **MCP server.** `dsa-sensei mcp` speaks stdio. Tools: `get_problem`, `list_problems`, `get_hint`, `analyze_complexity`, `record_attempt`, `due_reviews`, `progress`.
 

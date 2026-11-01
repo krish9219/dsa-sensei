@@ -14,9 +14,9 @@ PROBLEMS = [
         ),
         examples=[
             {
-                "input": "values = [2, 1, 5, 1, 3, 2], k = 3",
-                "output": "9",
-                "explanation": "5 + 1 + 3 = 9.",
+                "input": "values = [4, 2, 6, 1, 5, 3], k = 3",
+                "output": "12",
+                "explanation": "4 + 2 + 6 and 6 + 1 + 5 both sum to 12.",
             }
         ],
         constraints=["The list length is at most 100000."],
@@ -107,8 +107,8 @@ PROBLEMS = [
         ),
         examples=[
             {
-                "input": 'source = "ADOBECODEBANC", pattern = "ABC"',
-                "output": '"BANC"',
+                "input": 'source = "abdxabcx", pattern = "abc"',
+                "output": '"abc"',
             }
         ],
         constraints=[

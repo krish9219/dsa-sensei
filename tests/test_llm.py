@@ -15,7 +15,8 @@ class _Response:
     def __init__(self, payload: bytes) -> None:
         self._payload = payload
 
-    def read(self) -> bytes:
+    def read(self, n: int = -1) -> bytes:
+        del n
         return self._payload
 
     def __enter__(self) -> _Response:
@@ -166,6 +167,64 @@ def test_more_model_payloads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     assert ladder[0].startswith("Look")
     with pytest.raises(SenseiError, match="4000"):
         get_hint(custom_prompt="x" * 4001, db=tmp_path / "s.db")
+
+
+def test_fenced_solution_is_withheld_and_not_cached(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import http.client
+
+    calls = {"n": 0}
+
+    def fake_urlopen(request: object, timeout: float = 0) -> _Response:
+        calls["n"] += 1
+        content = json.dumps(
+            {
+                "nudge": "```python\ndef solve(nums):\n    return nums[0]\n```",
+                "approach": "Use one pass.",
+                "pseudocode": "scan once",
+            }
+        )
+        return _Response(_payload(content))
+
+    monkeypatch.setenv("DSA_SENSEI_LLM_BASE_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setenv("DSA_SENSEI_LLM_MODEL", "test-model")
+    monkeypatch.setattr("dsa_sensei.llm.urllib.request.urlopen", fake_urlopen)
+    prompt = "Find a pair of values that add up to a target in a list."
+    first = get_hint(custom_prompt=prompt, db=tmp_path / "s.db")
+    second = get_hint(custom_prompt=prompt, db=tmp_path / "s.db")
+    assert "withheld" in first.text
+    assert "def solve" not in first.text
+    assert calls["n"] == 2
+    assert second.text == first.text
+
+    long_pseudo = "\n".join(f"step {i}" for i in range(13))
+    assert "withheld" in sanitize_hint(long_pseudo, allow_pseudocode=True)
+
+    def dropped(request: object, timeout: float = 0) -> _Response:
+        raise http.client.RemoteDisconnected("closed")
+
+    monkeypatch.setattr("dsa_sensei.llm.urllib.request.urlopen", dropped)
+    with pytest.raises(LLMError, match="connection"):
+        generate_ladder("Describe a scheduling problem with several constraints and a limit.")
+
+    class Huge:
+        def read(self, n: int = -1) -> bytes:
+            return b"x" * (n if n > 0 else 10)
+
+        def __enter__(self) -> Huge:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr("dsa_sensei.llm.urllib.request.urlopen", lambda request, timeout=0: Huge())
+    with pytest.raises(LLMError, match="too large"):
+        generate_ladder("Describe a scheduling problem with several constraints and a limit.")
+
+    monkeypatch.setenv("DSA_SENSEI_LLM_BASE_URL", "http://example.test/v1")
+    monkeypatch.setenv("DSA_SENSEI_LLM_API_KEY", "secret")
+    monkeypatch.setattr("dsa_sensei.llm.urllib.request.urlopen", fake_urlopen)
+    with pytest.warns(UserWarning, match="plain HTTP"):
+        generate_ladder("Describe a scheduling problem with several constraints and a limit.")
 
 
 def test_timeout_setting(monkeypatch: pytest.MonkeyPatch) -> None:

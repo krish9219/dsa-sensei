@@ -101,8 +101,8 @@ PROBLEMS = [
         ),
         examples=[
             {
-                "input": "temps = [73, 74, 75, 71, 69, 72, 76, 73]",
-                "output": "[1, 1, 4, 2, 1, 1, 0, 0]",
+                "input": "temps = [30, 40, 35, 50]",
+                "output": "[1, 2, 1, 0]",
             }
         ],
         constraints=["There is at least one day and at most 100000."],
@@ -210,12 +210,12 @@ PROBLEMS = [
         pseudocode=(
             "best = 0\n"
             "stack = [-1]\n"
-            "consider every bar, plus a final height of 0\n"
-            "while the bar under the stack top is taller than the current height:\n"
-            "    h = height at the popped index\n"
-            "    width = current index - stack top - 1\n"
-            "    best = max(best, h * width)\n"
-            "push the current index\n"
+            "for each bar, then one extra bar of height 0:\n"
+            "    while the stack top is a taller bar:\n"
+            "        h = height at the popped index\n"
+            "        width = current index - new stack top - 1\n"
+            "        best = max(best, h * width)\n"
+            "    push the current index\n"
             "return best"
         ),
         patterns=["nearest smaller bars"],

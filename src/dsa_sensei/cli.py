@@ -172,6 +172,8 @@ def hint(
     if result.source == "llm":
         title += "  · custom"
     console.print(Panel(escape(result.text), title=title, border_style="cyan"))
+    if result.patterns:
+        console.print("[bold]Patterns:[/bold] " + escape(", ".join(result.patterns)))
     if result.levels_remaining:
         console.print(
             f"[dim]{result.levels_remaining} rung(s) left. "
@@ -393,8 +395,6 @@ def _print_problem(problem: Problem) -> None:
         console.print("[bold]Constraints[/bold]")
         for item in problem.constraints:
             console.print(f"  • {escape(item)}")
-    if problem.patterns:
-        console.print("[bold]Patterns:[/bold] " + escape(", ".join(problem.patterns)))
 
 
 def _read_source(source: str) -> str:
@@ -405,8 +405,8 @@ def _read_source(source: str) -> str:
         raise SenseiError(f"No Python file at {source}.")
     try:
         return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise SenseiError(f"Could not read {source}: {exc}") from exc
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SenseiError(f"Could not read {source} as UTF-8 text: {exc}") from exc
 
 
 def _stdin() -> str:

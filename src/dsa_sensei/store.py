@@ -55,6 +55,9 @@ CREATE INDEX IF NOT EXISTS idx_cards_due ON cards(due_on);
 """
 
 
+_MIGRATIONS = (_SCHEMA,)
+
+
 class Store:
     """One connection per operation. Safe to construct before the file exists."""
 
@@ -62,20 +65,22 @@ class Store:
         self.path = path
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, isolation_level=None)
         connection.row_factory = sqlite3.Row
         try:
             connection.execute("PRAGMA foreign_keys = ON")
-            connection.executescript(_SCHEMA)
-            connection.execute(
-                "INSERT INTO schema_meta(key, value) VALUES('version', '1') ON CONFLICT(key) DO NOTHING"
-            )
-            yield connection
-            connection.commit()
+            connection.execute("PRAGMA busy_timeout = 5000")
+            _apply_migrations(connection)
+            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            try:
+                yield connection
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
         except sqlite3.Error as exc:
-            connection.rollback()
             raise SenseiError(f"Could not use the study log at {self.path}: {exc}") from exc
         finally:
             connection.close()
@@ -119,7 +124,7 @@ class Store:
             raise SenseiError("hints_used must be between 0 and 3.")
         if len(notes) > 2000:
             raise SenseiError("Notes are limited to 2000 characters.")
-        with self._connect() as connection:
+        with self._connect(immediate=True) as connection:
             row = connection.execute(
                 "SELECT ease, interval_days, repetitions FROM cards WHERE problem_id = ?",
                 (problem_id,),
@@ -163,6 +168,7 @@ class Store:
                     on.isoformat(),
                 ),
             )
+            connection.execute("DELETE FROM hint_state WHERE problem_id = ?", (problem_id,))
         card = self.get_card(problem_id)
         if card is None:
             raise SenseiError(f"The attempt for '{problem_id}' did not persist.")
@@ -233,6 +239,22 @@ class Store:
             return False
         self.path.unlink()
         return True
+
+
+def _apply_migrations(connection: sqlite3.Connection) -> None:
+    """Apply ordered schema steps. ``PRAGMA user_version`` is the source of truth."""
+    current = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    for version, script in enumerate(_MIGRATIONS, start=1):
+        if current >= version:
+            continue
+        connection.executescript(script)
+        connection.execute(f"PRAGMA user_version = {version}")
+        current = version
+    connection.execute(
+        "INSERT INTO schema_meta(key, value) VALUES('version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(current),),
+    )
 
 
 def _card(row: sqlite3.Row) -> Card:

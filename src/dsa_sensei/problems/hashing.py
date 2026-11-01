@@ -112,9 +112,9 @@ PROBLEMS = [
         ),
         examples=[
             {
-                "input": "values = [100, 4, 200, 1, 3, 2]",
-                "output": "4",
-                "explanation": "The run 1, 2, 3, 4 has length 4.",
+                "input": "values = [9, 1, 13, 2, 8, 3]",
+                "output": "3",
+                "explanation": "The run 1, 2, 3 has length 3.",
             }
         ],
         constraints=[

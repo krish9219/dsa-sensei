@@ -8,11 +8,15 @@ completions API.
 
 from __future__ import annotations
 
+import ast
+import http.client
 import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
+import warnings
 from dataclasses import dataclass
 
 from dsa_sensei.errors import LLMError, LLMNotConfigured
@@ -34,6 +38,9 @@ _WITHHELD = (
     "That response looked like a full implementation, so it was withheld. "
     "Try again, or study a built-in problem."
 )
+_MAX_HINT_LINES = 12
+_MAX_RESPONSE_BYTES = 1_000_000
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,16 +97,29 @@ def generate_ladder(prompt: str, settings: LLMSettings | None = None) -> tuple[s
     )
 
 
-def sanitize_hint(text: str, *, allow_pseudocode: bool) -> str:
-    cleaned = text.strip()
-    if not allow_pseudocode and "```" in cleaned:
-        cleaned = _FENCE.sub("a sketch was removed from this rung", cleaned).strip()
-    too_much_code = bool(_CLASS.search(cleaned)) or (
-        bool(_DEF.search(cleaned)) and (not allow_pseudocode or cleaned.count("\n") > 18)
-    )
-    if too_much_code or not cleaned:
+def hint_was_withheld(text: str) -> bool:
+    return _WITHHELD in text
+
+
+def sanitize_hint(text: str, *, allow_pseudocode: bool = False) -> str:
+    """Strip fences on every rung and withhold anything that is a real function."""
+    del allow_pseudocode
+    cleaned = _FENCE.sub("", text).replace("```", "").strip()
+    if not cleaned or len(cleaned.splitlines()) > _MAX_HINT_LINES or _defines_code(cleaned):
         return _WITHHELD
     return cleaned
+
+
+def _defines_code(text: str) -> bool:
+    if _DEF.search(text) or _CLASS.search(text):
+        return True
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for node in ast.walk(tree)
+    )
 
 
 def _chat(settings: LLMSettings, payload: dict[str, object]) -> str:
@@ -112,15 +132,22 @@ def _chat(settings: LLMSettings, payload: dict[str, object]) -> str:
     request.add_header("Accept", "application/json")
     if settings.api_key:
         request.add_header("Authorization", f"Bearer {settings.api_key}")
+    _warn_plaintext_key(settings, url)
     try:
         with urllib.request.urlopen(request, timeout=settings.timeout) as response:
-            raw = response.read()
+            raw = response.read(_MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         raise LLMError(f"The hint model returned HTTP {exc.code}.") from exc
     except urllib.error.URLError as exc:
         raise LLMError(f"Could not reach the hint model: {exc.reason}") from exc
+    except http.client.HTTPException as exc:
+        raise LLMError(f"The hint model connection failed: {exc}") from exc
     except TimeoutError as exc:
         raise LLMError("The hint model timed out.") from exc
+    except OSError as exc:
+        raise LLMError(f"The hint model connection failed: {exc}") from exc
+    if len(raw) > _MAX_RESPONSE_BYTES:
+        raise LLMError("The hint model response was too large.")
     try:
         parsed = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -134,6 +161,19 @@ def _chat(settings: LLMSettings, payload: dict[str, object]) -> str:
     if not isinstance(content, str) or not content.strip():
         raise LLMError("The hint model returned an empty message.")
     return content
+
+
+def _warn_plaintext_key(settings: LLMSettings, url: str) -> None:
+    if not settings.api_key:
+        return
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "http" and host not in _LOCAL_HOSTS:
+        warnings.warn(
+            "DSA_SENSEI_LLM_API_KEY is being sent over plain HTTP to a non-local host.",
+            UserWarning,
+            stacklevel=2,
+        )
 
 
 def _extract_json(content: str) -> dict[str, str]:

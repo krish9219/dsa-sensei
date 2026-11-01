@@ -64,9 +64,9 @@ PROBLEMS = [
         ),
         examples=[
             {
-                "input": "n = 4, prereqs = [[1, 0], [2, 0], [3, 1], [3, 2]]",
+                "input": "n = 4, prereqs = [[1, 0], [2, 1], [3, 1]]",
                 "output": "[0, 1, 2, 3]",
-                "explanation": "[0, 2, 1, 3] is also valid.",
+                "explanation": "[0, 1, 3, 2] is also valid.",
             }
         ],
         constraints=["n is at most 2000.", "There are at most 5000 prerequisite pairs."],

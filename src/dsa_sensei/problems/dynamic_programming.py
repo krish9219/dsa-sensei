@@ -60,9 +60,9 @@ PROBLEMS = [
         ),
         examples=[
             {
-                "input": "houses = [2, 7, 9, 3, 1]",
-                "output": "12",
-                "explanation": "2 + 9 + 1 = 12.",
+                "input": "houses = [4, 1, 2, 9]",
+                "output": "13",
+                "explanation": "4 + 9 = 13.",
             }
         ],
         constraints=["There are at most 100 houses."],
@@ -101,8 +101,12 @@ PROBLEMS = [
             "times as you want. If no combination works, return -1."
         ),
         examples=[
-            {"input": "coins = [1, 2, 5], amount = 11", "output": "3"},
-            {"input": "coins = [2], amount = 3", "output": "-1"},
+            {
+                "input": "coins = [1, 4, 5], amount = 8",
+                "output": "2",
+                "explanation": "Two 4s make 8.",
+            },
+            {"input": "coins = [3], amount = 4", "output": "-1"},
         ],
         constraints=[
             "There is at least one denomination and at most 12.",
@@ -147,9 +151,9 @@ PROBLEMS = [
         ),
         examples=[
             {
-                "input": "values = [10, 9, 2, 5, 3, 7, 101, 18]",
+                "input": "values = [8, 1, 4, 3, 6, 2, 9]",
                 "output": "4",
-                "explanation": "One such subsequence is 2, 3, 7, 101.",
+                "explanation": "One such subsequence is 1, 4, 6, 9.",
             }
         ],
         constraints=["The list length is between 1 and 2500."],

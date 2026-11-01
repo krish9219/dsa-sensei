@@ -10,18 +10,22 @@ class SenseiError(Exception):
 class ProblemNotFound(SenseiError):
     """No built-in problem matches this id or alias."""
 
-    def __init__(self, problem_id: str, suggestions: list[str]) -> None:
+    def __init__(
+        self,
+        problem_id: str,
+        suggestions: list[str],
+        *,
+        suggest_custom: bool = False,
+    ) -> None:
         self.problem_id = problem_id
         self.suggestions = list(suggestions)
         if suggestions:
             listed = ", ".join(suggestions)
             message = f"Unknown problem '{problem_id}'. Did you mean {listed}?"
         else:
-            message = (
-                f"Unknown problem '{problem_id}'. "
-                "Run `dsa-sensei list` to see the catalog, or pass a custom prompt "
-                "with an OpenAI-compatible endpoint configured."
-            )
+            message = f"Unknown problem '{problem_id}'. Run `dsa-sensei list` to see the catalog."
+            if suggest_custom:
+                message += " Or pass a custom prompt with an OpenAI-compatible endpoint configured."
         super().__init__(message)
 
 

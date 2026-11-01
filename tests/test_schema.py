@@ -30,6 +30,8 @@ def test_catalog_matches_the_schema() -> None:
         assert problem.target_time in problem.acceptable_time
         public = problem.public_dict()
         assert "hints" not in public
+        assert "patterns" not in public
+        assert "aliases" not in public
         assert "target_time" not in public
         assert "target_space" not in public
 

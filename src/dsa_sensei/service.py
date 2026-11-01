@@ -9,8 +9,8 @@ from pathlib import Path
 from dsa_sensei.catalog import get_catalog
 from dsa_sensei.clock import parse_iso_date, today
 from dsa_sensei.complexity import analyze_python, describe_comparison
-from dsa_sensei.errors import InvalidHintLevel, SenseiError
-from dsa_sensei.llm import generate_ladder, require_settings
+from dsa_sensei.errors import InvalidHintLevel, ProblemNotFound, SenseiError
+from dsa_sensei.llm import generate_ladder, hint_was_withheld, require_settings
 from dsa_sensei.models import (
     Attempt,
     AttemptResult,
@@ -70,7 +70,10 @@ def get_hint(
         return _custom_hint(custom_prompt.strip(), level, db)
     if not problem_id or not problem_id.strip():
         raise SenseiError("Provide a problem id, or a custom prompt.")
-    problem = get_catalog().get(problem_id)
+    try:
+        problem = get_catalog().get(problem_id)
+    except ProblemNotFound as exc:
+        raise ProblemNotFound(exc.problem_id, exc.suggestions, suggest_custom=True) from exc
     store = open_store(db, write=True)
     assert store is not None
     revealed = store.revealed_level(problem.id)
@@ -97,6 +100,7 @@ def get_hint(
         levels_remaining=3 - chosen,
         source="builtin",
         exhausted=exhausted,
+        patterns=problem.patterns if chosen >= 2 else (),
     )
 
 
@@ -194,7 +198,8 @@ def progress_report(*, db: Path | None = None, on: date | None = None) -> Progre
     catalog = get_catalog()
     store = open_store(db, write=False)
     cards = [] if store is None else store.all_cards()
-    attempts = [] if store is None else store.attempts()
+    recorded = [] if store is None else store.attempts()
+    attempts = [item for item in recorded if item.problem_id in catalog.by_id]
     by_id = {card.problem_id: card for card in cards}
     attempt_counts: dict[str, int] = {}
     quality_sums: dict[str, int] = {}
@@ -288,6 +293,8 @@ def _custom_hint(prompt: str, level: int | None, db: Path | None) -> HintResult:
     store = open_store(db, write=True)
     assert store is not None
     cached = store.get_custom_hint(digest)
+    if cached is not None and any(hint_was_withheld(part) for part in cached[:3]):
+        cached = None
     if cached is None:
         ladder = generate_ladder(prompt, require_settings())
         revealed = 0
@@ -305,7 +312,8 @@ def _custom_hint(prompt: str, level: int | None, db: Path | None) -> HintResult:
         if level not in (1, 2, 3):
             raise InvalidHintLevel(level)
         chosen = level
-    store.save_custom_hint(digest, prompt, ladder, chosen)
+    if not any(hint_was_withheld(part) for part in ladder):
+        store.save_custom_hint(digest, prompt, ladder, chosen)
     text = ladder[chosen - 1]
     if exhausted:
         text = f"{text}\n\n{_EXHAUSTED}"

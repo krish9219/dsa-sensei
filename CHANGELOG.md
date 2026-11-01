@@ -13,3 +13,11 @@ All notable changes to dsa-sensei are documented here. The format is based on [K
 - Typer + Rich CLI installed as `dsa-sensei`.
 - MCP server (`dsa-sensei mcp`) with tools for problems, hints, complexity, attempts, due reviews, and progress.
 - Optional OpenAI-compatible hints for problems outside the catalog, off unless configured.
+
+### Fixed
+
+- Complexity estimates for amortized scans (monotonic stacks, sliding windows, grid flood fills) and constant-size loops.
+- LLM hint sanitizer strips fences on every rung and withholds function definitions. Withheld rungs are not cached.
+- Hint progress restarts after a logged attempt.
+- Problem statements no longer reveal pattern names before the approach rung.
+- Study-log writes use an immediate transaction, a busy timeout, and an ordered schema migration.

@@ -55,9 +55,9 @@ PROBLEMS = [
             "equal to the length of the list."
         ),
         examples=[
-            {"input": "values = [1, 3, 5, 8], target = 5", "output": "2"},
-            {"input": "values = [1, 3, 5, 8], target = 6", "output": "3"},
-            {"input": "values = [1, 3, 5, 8], target = 9", "output": "4"},
+            {"input": "values = [2, 4, 7, 9], target = 7", "output": "2"},
+            {"input": "values = [2, 4, 7, 9], target = 5", "output": "2"},
+            {"input": "values = [2, 4, 7, 9], target = 10", "output": "4"},
         ],
         constraints=["The list length is at most 100000."],
         nudge=(
@@ -186,8 +186,8 @@ PROBLEMS = [
         ),
         examples=[
             {
-                "input": "weights = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], days = 5",
-                "output": "15",
+                "input": "weights = [2, 3, 5, 5, 6, 8], days = 3",
+                "output": "11",
             }
         ],
         constraints=[
@@ -241,7 +241,10 @@ PROBLEMS = [
                 "explanation": "The merged list is [1, 2, 4, 5, 7, 9].",
             }
         ],
-        constraints=["Each list has length at most 1000.", "Neither list is required to be non-empty."],
+        constraints=[
+            "Each list has length at most 1000.",
+            "At least one of the two lists is non-empty.",
+        ],
         nudge=(
             "You do not need the full merge. A cut in the shorter list implies a cut "
             "in the longer one so the left side has half of the values. What has to "

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from dsa_sensei.complexity import (
@@ -239,6 +241,92 @@ def test_more_cost_shapes() -> None:
         "def first(nums):\n    try:\n        return nums[0]\n    except IndexError:\n        return 0\n"
     )
     assert guarded.time == "O(1)"
+
+
+def test_amortized_patterns_stay_linear() -> None:
+    warmer = analyze_python(
+        "def wait(temps):\n"
+        "    answer = [0] * len(temps)\n"
+        "    stack = []\n"
+        "    for i, temp in enumerate(temps):\n"
+        "        while stack and temps[stack[-1]] < temp:\n"
+        "            j = stack.pop()\n"
+        "            answer[j] = i - j\n"
+        "        stack.append(i)\n"
+        "    return answer\n"
+    )
+    window = analyze_python(
+        "def longest(text):\n"
+        "    left = best = 0\n"
+        "    counts = {}\n"
+        "    for right, ch in enumerate(text):\n"
+        "        counts[ch] = counts.get(ch, 0) + 1\n"
+        "        while counts[ch] > 1:\n"
+        "            counts[text[left]] -= 1\n"
+        "            left += 1\n"
+        "        best = max(best, right - left + 1)\n"
+        "    return best\n"
+    )
+    islands = analyze_python(
+        "from collections import deque\n"
+        "def islands(grid):\n"
+        "    count = 0\n"
+        "    for r in range(len(grid)):\n"
+        "        for c in range(len(grid[0])):\n"
+        "            if grid[r][c] != '1':\n"
+        "                continue\n"
+        "            count += 1\n"
+        "            queue = deque([(r, c)])\n"
+        "            grid[r][c] = '0'\n"
+        "            while queue:\n"
+        "                x, y = queue.popleft()\n"
+        "                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):\n"
+        "                    nr, nc = x + dr, y + dc\n"
+        "                    if 0 <= nr < len(grid) and 0 <= nc < len(grid[0]) and grid[nr][nc] == '1':\n"
+        "                        grid[nr][nc] = '0'\n"
+        "                        queue.append((nr, nc))\n"
+        "    return count\n"
+    )
+    assert warmer.time == "O(n)"
+    assert window.time == "O(n)"
+    assert islands.time == "O(n)"
+
+
+def test_deep_expression_is_rejected() -> None:
+    expr = "x"
+    for _ in range(1500):
+        expr = f"{expr}[0]"
+    with pytest.raises(CodeRejected, match="nested too deeply"):
+        analyze_python(f"def f(x):\n    return {expr}\n")
+
+
+def test_reference_solutions_stay_within_catalog_bounds() -> None:
+    from dsa_sensei.catalog import get_catalog
+    from tests.reference_solutions import SOLUTIONS
+
+    catalog = get_catalog()
+    assert set(SOLUTIONS) == {problem.id for problem in catalog.problems}
+    for problem in catalog.problems:
+        report = analyze_python(SOLUTIONS[problem.id])
+        estimate = complexity_key(report.time)
+        allowed = [complexity_key(bound) for bound in problem.acceptable_time]
+        assert estimate is not None, problem.id
+        assert all(bound is not None for bound in allowed)
+        worst = max(bound for bound in allowed if bound is not None)
+        assert estimate <= worst, (problem.id, report.time, problem.acceptable_time)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="except* requires Python 3.11")
+def test_try_star_is_analyzed() -> None:
+    report = analyze_python(
+        "def f(nums):\n"
+        "    try:\n"
+        "        for value in nums:\n"
+        "            pass\n"
+        "    except* ValueError:\n"
+        "        return 0\n"
+    )
+    assert report.time == "O(n)"
 
 
 def test_catalog_comparison_is_honest() -> None:
